@@ -1,0 +1,615 @@
+package dungeonCrawler
+
+import dungeonCrawler.*;
+import dungeonCrawler.gameEngine.*;
+import dungeonCrawler.characters.*;
+import dungeonCrawler.perks.*;
+import java.awt.event.KeyEvent;
+
+//Class that keeps track of the x-axis of the sine waves for the speed mechanism
+declare Counter
+	value : double
+end
+
+//Decides who has the the next turn
+function TurnValue getTurn(double pgSpeed, double foeSpeed, Counter x) {
+	double prevSignPg = Math.signum(Math.sin(pgSpeed * x.getValue()));
+	double prevSignFoe = Math.signum(Math.sin(foeSpeed * x.getValue()));
+	double nextSignPg = 0;
+	double nextSignFoe = 0;
+	while (true) {
+		x.setValue(x.getValue() + 0.01);
+		nextSignPg = Math.signum(Math.sin(pgSpeed * x.getValue()));
+		nextSignFoe = Math.signum(Math.sin(foeSpeed * x.getValue()));
+		if (nextSignPg != prevSignPg && nextSignFoe != prevSignFoe) {
+			double pgProb = 1-pgSpeed / (pgSpeed + foeSpeed);
+			if (Math.random() < pgProb)
+				return TurnValue.PG;
+				
+			return TurnValue.ENEMY;
+		}
+		if (nextSignPg != prevSignPg)
+			return TurnValue.PG;
+		if (nextSignFoe != prevSignFoe)
+			return TurnValue.ENEMY;
+		
+		prevSignPg = nextSignPg;
+		prevSignFoe = nextSignFoe;
+	}
+}
+
+//Get the location of every foe
+function Location[] foesLocations(Map map) {
+	int n = numberOf(map, MapElement.FOE);
+	Location[] locations = new Location[n];
+	int i = 0;
+	for(int r = 0; r < map.getHeight(); r++) {
+		for(int c = 0; c < map.getWidth(); c++) {
+			if(get(map, r,c) == MapElement.FOE){
+				locations[i] = new Location(r,c);
+				i++;
+			}
+		}
+	}
+	
+	return locations;
+}
+
+//Return the distance between a location and th PG
+function double distanceFromPG(Location element, Location pgLocation){
+	return Math.sqrt(Math.pow(element.getRow() - pgLocation.getRow(),2) + Math.pow(element.getCol() - pgLocation.getCol(),2));
+}
+
+//Remove duplicate PGDefence
+rule "Remove PGDefence"
+salience -100
+	when
+		$d1: PGDefend()
+		$d2 : PGDefend(id != $d1.id)
+	then
+		retract($d2);
+end
+
+//Remove duplicate EnemyDefence
+rule "Remove EnemyDefence"
+salience -100
+	when
+		$d1: EnemyDefend()
+		$d2 : EnemyDefend(id != $d1.id)
+	then
+		retract($d2);
+end
+
+//Creates a new foe and starts a battle with him
+rule "Start Battle Foe"
+    when
+        $sbf : StartBattleFoe()
+        $pg : PG()
+        $gw : GameWindow(state != GameState.BATTLE_FOE)
+    then
+    	$gw.clearRecap();
+    	update($gw);
+    	retract($sbf);
+        $gw.setState(GameState.BATTLE_FOE);
+        Foe foe = CharacterFactory.getRandomFoe();
+        $gw.setEnemy(foe);
+        $gw.setCursorIndex(0);
+        update($gw);
+        Turn turn = new Turn();
+        Counter x = new Counter();
+        x.setValue(0.1);
+        insert(x);
+        turn.setTurn(getTurn($pg.getSpeed(), foe.getSpeed(), x));
+        update(x);
+        insert(turn);
+        insert(foe);
+end
+
+//Creates a new boss and starts a battle with him
+rule "Start Battle Boss"
+    when
+        $sbf : StartBattleBoss()
+        $pg : PG()
+        $gw : GameWindow(state != GameState.BATTLE_BOSS)
+    then
+    	$gw.clearRecap();
+    	update($gw);
+    	retract($sbf);
+        $gw.setState(GameState.BATTLE_BOSS);
+        Boss boss= CharacterFactory.getRandomBoss();
+        $gw.setEnemy(boss);
+        $gw.setCursorIndex(0);
+        update($gw);
+        Turn turn = new Turn();
+        Counter x = new Counter();
+        x.setValue(0.1);
+        insert(x);
+        turn.setTurn(getTurn($pg.getSpeed(), boss.getSpeed(), x));
+        update(x);
+        insert(turn);
+        insert(boss);
+end
+
+
+//Handles PG's menu
+rule "Handle Battle Menu And PG Turn"
+	when
+		not Attack()
+		$kp : KeyPress(key : code)
+		$turn : Turn(turn == TurnValue.PG)
+        $gw : GameWindow(state == GameState.BATTLE_FOE || == GameState.BATTLE_BOSS)
+        $pg : PG(HpCurrent > 0.0)
+        $enemy : Enemy()
+		$x  : Counter()
+	then
+		switch(key){
+			case KeyEvent.VK_DOWN:
+				$gw.setCursorIndex(1);
+				break;
+			case KeyEvent.VK_UP:
+				$gw.setCursorIndex(0);
+				break;
+			case KeyEvent.VK_ENTER:
+				if($gw.getCursorIndex() == 0){
+					insert(new PGAttack());
+				}
+				if($gw.getCursorIndex() == 1){
+					$gw.addRecap("You take defend position");
+					update($gw);
+					insert(new PGDefend());
+					$turn.setTurn(getTurn($pg.getSpeed(), $enemy.getSpeed(), $x));
+					update($turn);
+				}
+				break;
+		}
+		update($gw);
+		retract($kp);
+		
+end
+
+//Execute the foe's action, assume PG do not defend
+rule "Enemy Turn, PG Do Not Defends"
+	when
+		$turn : Turn(turn == TurnValue.ENEMY)
+		$enemy : Enemy(HpCurrent > 0.0)
+		$pg : PG()
+		$x  : Counter()
+		$gw : GameWindow()
+		not PGDefend()
+	then
+		insert($enemy.getPerk());
+		if ($enemy instanceof Boss){
+			Boss b = (Boss)$enemy;
+			insert(b.getPerk2());
+		}
+		if(Math.random() < 0.5){
+			if(Math.random() >= $enemy.getAccuracy()){
+				$gw.addRecap("Enemy missed you");
+				update($gw);
+				return;
+			}
+			if($pg.getPerk().equals(new Elusion()) && Math.random() < 0.2){
+				$gw.addRecap("You dodged the enemy's attack");
+				update($gw);
+				$turn.setTurn(getTurn($pg.getSpeed(), $enemy.getSpeed(), $x));
+				update($turn);
+				return;
+			}
+			
+			double damage = $enemy.getAttack();
+			if(Math.random() < $enemy.getCritical()){
+				damage *= 2;
+				$gw.addRecap("Enemy attacks with a critical hit");
+				update($gw);
+			}else{
+				$gw.addRecap("Enemy attacks");
+				update($gw);
+			}
+			double decrement = Math.max(0, damage - $pg.getDefence()/2);
+			$pg.setHpCurrent($pg.getHpCurrent() - decrement);
+			update($pg);
+			if($pg.getPerk().equals(new CollateralDamage())){
+				$enemy.setHpCurrent($enemy.getHpCurrent() - decrement * 0.25);
+				$gw.addRecap("Enemy takes collateral damage");
+				update($gw);
+			}
+		}else{
+			$gw.addRecap("Enemy takes defend position");
+			update($gw);
+			insert(new EnemyDefend());
+		}
+		$turn.setTurn(getTurn($pg.getSpeed(), $enemy.getSpeed(), $x));
+		update($turn);
+end
+
+//Execute the foe's action, assume PG defend
+rule "Enemy Turn, PG Defends"
+	when
+		$turn : Turn(turn == TurnValue.ENEMY)
+		$enemy : Enemy(HpCurrent > 0.0)
+		$pg : PG()
+		$pgDefends : PGDefend()
+		$x  : Counter()
+		$gw : GameWindow()
+	then
+		insert($enemy.getPerk());
+		if ($enemy instanceof Boss){
+			Boss b = (Boss)$enemy;
+			insert(b.getPerk2());
+		}
+		if(Math.random() < 0.5){
+			if(Math.random() >= $enemy.getAccuracy()){
+				$gw.addRecap("Enemy missed you");
+				update($gw);
+				return;
+			}
+			if($pg.getPerk().equals(new Elusion()) && Math.random() < 0.2){
+				$gw.addRecap("You dodged the enemy's attack");
+				update($gw);
+				$turn.setTurn(getTurn($pg.getSpeed(), $enemy.getSpeed(), $x));
+				update($turn);
+				return;
+			}
+			
+			double damage = $enemy.getAttack();
+			if(Math.random() < $enemy.getCritical()){
+				damage *= 2;
+				$gw.addRecap("Enemy attacks with a critical hit");
+			}else{
+				$gw.addRecap("Enemy attacks");
+			}
+			$gw.addRecap("You defended");
+			update($gw);
+			double decrement = Math.max(0, damage - $pg.getDefence());
+			$pg.setHpCurrent($pg.getHpCurrent() - decrement);
+			update($pg);
+			if($pg.getPerk().equals(new CollateralDamage())){
+				$enemy.setHpCurrent($enemy.getHpCurrent() - decrement * 0.25);
+				$gw.addRecap("Enemy takes collateral damage");
+				update($gw);
+			}
+		}else{
+			$gw.addRecap("Enemy takes defend position");
+			update($gw);
+			insert(new EnemyDefend());
+		}
+		$turn.setTurn(getTurn($pg.getSpeed(), $enemy.getSpeed(), $x));
+		update($turn);
+		retract($pgDefends);
+end
+
+//Execute the PG's action, assume foe defend
+rule "PG Attacks, Enemy Defends"
+	when
+		$turn : Turn(turn == TurnValue.PG)
+		$attack : PGAttack()	
+		$pg : PG()
+		$enemy : Enemy(HpCurrent > 0.0)
+		$enemyDefend : EnemyDefend()
+		$x : Counter()
+		$gw : GameWindow()
+	then
+	
+		if(Math.random() >= $pg.getAccuracy()){
+			$gw.addRecap("You missed the enemy");
+			update($gw);
+			
+		}else{
+			insert($pg.getPerk());
+			if($enemy.getPerk().equals(new Elusion()) && Math.random() < 0.2){
+				$gw.addRecap("Enemy dodged your attack");
+				update($gw);
+				$turn.setTurn(getTurn($pg.getSpeed(), $enemy.getSpeed(), $x));
+				update($turn);
+				return;
+			}
+			double damage = $pg.getAttack();
+			if(Math.random() < $pg.getCritical()){
+				damage *= 2;
+				$gw.addRecap("You attacked with a critical hit");
+			}else{
+				$gw.addRecap("You attack");
+			}
+			$gw.addRecap("Enemy defends");
+			update($gw);
+			double decrement = Math.max(0, damage - $enemy.getDefence());
+			$enemy.setHpCurrent($enemy.getHpCurrent() - decrement);
+			
+			if($enemy.getPerk().equals(new CollateralDamage())){
+				$pg.setHpCurrent($pg.getHpCurrent() - decrement * 0.25);
+				$gw.addRecap("You take collateral damage");
+				update($gw);
+			}
+			update($enemy);
+		}
+		$turn.setTurn(getTurn($pg.getSpeed(), $enemy.getSpeed(), $x));
+		update($turn);
+		retract($attack);
+		retract($enemyDefend);
+end
+
+//Execute the PG's action, assume foe do not defend
+rule "PG Attacks, Enemy Does Not Defends"
+	when
+		$turn : Turn(turn == TurnValue.PG)
+		$attack : PGAttack()	
+		$pg : PG()
+		$enemy : Enemy(HpCurrent > 0.0)
+		$x : Counter()
+		$gw : GameWindow()
+		not EnemyDefend()
+	then
+		if(Math.random() >= $pg.getAccuracy()){
+			$gw.addRecap("You missed the enemy");
+			update($gw);
+		}else{
+			insert($pg.getPerk());
+			if($enemy.getPerk().equals(new Elusion()) && Math.random() < 0.2){
+				$gw.addRecap("Enemy dodged your attack");
+				update($gw);
+				$turn.setTurn(getTurn($pg.getSpeed(), $enemy.getSpeed(), $x));
+				update($turn);
+				return;
+			}
+			double damage = $pg.getAttack();
+			if(Math.random() < $pg.getCritical()){
+				damage *= 2;
+				$gw.addRecap("You attacked with a critical hit");
+				update($gw);
+			}else{
+				$gw.addRecap("You attack");
+				update($gw);
+			}
+			double decrement = Math.max(0, damage - $enemy.getDefence() / 2);
+			$enemy.setHpCurrent($enemy.getHpCurrent() - decrement);
+		}
+		$turn.setTurn(getTurn($pg.getSpeed(), $enemy.getSpeed(), $x));
+		update($turn);
+		update($enemy);
+		retract($attack)
+		
+end
+
+//When a foe dies, go back walking
+rule "Go Back Walking"
+salience -10
+	when
+		$foe : Foe(HpCurrent == 0)
+		$pg : PG($location : location)
+		$gw : GameWindow()
+		$map : Map()
+		$x : Counter()
+		$turn : Turn()
+	then
+		retract($foe);
+		retract($x);
+		retract($turn);
+		Location[] locations = foesLocations($map);
+		Location nearest = locations[0];
+		for(int i = 1; i < locations.length; i++){
+			if(distanceFromPG(locations[i], $location) < distanceFromPG(nearest, $location))
+				nearest = locations[i];			
+		}
+		$map.setTiledMap(nearest.getRow(), nearest.getCol(), MapElement.FLOOR);
+		update($map);
+		$gw.setState(GameState.WALKING);
+		update($gw);
+		
+end
+
+//When a boss dies, the game is over and the PG wins
+rule "Win"
+	when
+		$boss : Boss(HpCurrent == 0)
+		$gw : GameWindow()
+	then
+		retract($boss);
+		$gw.setState(GameState.WIN);
+		update($gw);
+end
+
+//When the PG dies, the game is over and the PG has lost
+rule "Lost"
+	when
+		$pg : PG(HpCurrent == 0)
+		$gw : GameWindow()
+	then
+		$gw.setState(GameState.LOST);
+		update($gw);
+		$gw.repaint();
+		retract($pg);
+end
+
+//CollateralDamage is not handled with a separate rule
+rule "Remove CollateralDamage"
+	when
+		$perk : CollateralDamage()
+	then
+		retract($perk);
+end
+
+//Elusion is not handled with a separate rule
+rule "Remove Elusion"
+	when
+		$perk : Elusion()
+	then
+		retract($perk);
+end
+
+//CriticalHit is not handled with a separate rule
+rule "Remove CriticalHit"
+	when
+		$perk : CriticalHit()
+	then
+		retract($perk);
+end
+
+//Increase PG's or Foe's attack
+rule "Die Hard Perk"
+salience -10
+	when
+		$dieHard : DieHard()
+		$char : Character(perk.equals($dieHard))
+	then
+		retract($dieHard);
+		double increment = 0;
+
+		increment = $char.getHpMax() / $char.getHpCurrent() / 2;
+		if($char.getHpMax() == $char.getHpCurrent() || $char.getHpCurrent() == 0)
+			increment = 0;
+		$char.setAttack( $char.getAttack() + increment);
+		update($char);
+		
+end
+
+//Increase Boss's attack
+rule "Die Hard Perk BOSS"
+salience -10
+	when
+		$dieHard : DieHard()
+		$boss : Boss(perk2.equals($dieHard))
+	then
+		retract($dieHard);
+		double increment = 0;
+
+		increment = $boss.getHpMax() / $boss.getHpCurrent() / 2;
+		if($boss.getHpMax() == $boss.getHpCurrent() || $boss.getHpCurrent() == 0)
+			increment = 0;
+		$boss.setAttack( $boss.getAttack() + increment);
+		update($boss);
+
+		
+end
+
+//Increase PG's or Foe's current HP
+rule "Healer Perk"
+salience -9
+	when
+		$healer : Healer()
+		$char : Character(perk.equals($healer))
+	then
+		retract($healer);
+		double increment = 1.5;
+		$char.setHpCurrent($char.getHpCurrent() + increment);
+		update($char);
+end
+
+//Increase Boss's current HP
+rule "Healer Perk Boss"
+salience -9
+	when
+		$healer : Healer()
+		$boss : Boss(perk2.equals($healer))
+	then
+		retract($healer);
+		double increment = 1.5;
+		$boss.setHpCurrent($boss.getHpCurrent() + increment);
+		update($boss);
+end
+
+//Increment PG's or Foe's defence
+rule "Petrification Perk"
+salience -8
+	when
+		$petrification : Petrification()
+		$char : Character(perk.equals($petrification))
+	then
+		retract($petrification);
+		double increment = 0.5;
+
+		$char.setDefence($char.getDefence() + increment);
+		$char.setSpeed($char.getSpeed() - increment);
+		update($char);
+
+end
+
+//Increment Boss's defence
+rule "Petrification Perk BOSS"
+salience -8
+	when
+		$petrification : Petrification()
+		$boss : Boss(perk2.equals($petrification))
+	then
+		retract($petrification);
+		double increment = 0.5;
+
+		$boss.setDefence($boss.getDefence() + increment);
+		$boss.setSpeed($boss.getSpeed() - increment);
+		update($boss);
+end
+
+//Increase PG's or Foe's attack and decrease ACC
+rule "Rage Perk"
+salience -7
+	when
+		$rage : Rage()
+		$char : Character(perk.equals($rage))
+	then
+		retract($rage);
+		double increment = 0.5;
+
+		$char.setAttack($char.getAttack() + increment);
+		$char.setAccuracy($char.getAccuracy() - 0.075);
+		update($char);
+
+end
+
+//Increase Boss's attack and decrease ACC
+rule "Rage Perk BOSS"
+salience -7
+	when
+		$rage : Rage()
+		$boss : Boss(perk2.equals($rage))
+	then
+		retract($rage);
+		double increment = 0.5;
+
+		$boss.setAttack($boss.getAttack() + increment);
+		$boss.setAccuracy($boss.getAccuracy() - 0.075);
+		update($boss);
+
+end
+
+//The DEF ATK swap can happen only once
+rule "Remove Swap"
+salience -100
+	when
+		$swap : Swap()
+		$swapped : Swapped()
+	then
+		retract($swap);
+end
+
+//Swaps PG's or Foe's ATK and DEF
+rule "Swap Perk"
+salience -6
+	when
+		$swap : Swap()
+		$char : Character(perk.equals($swap), hpCurrent <= hpMax / 2)
+		not Swapped()
+	then
+		retract($swap);
+
+		double def = $char.getDefence();
+		$char.setDefence($char.getAttack());
+		$char.setAttack(def);
+		insert(new Swapped());
+		update($char);
+end
+
+//Swaps Boss's ATK and DEF
+rule "Swap Perk BOSS"
+salience -6
+	when
+		$swap : Swap()
+		$boss : Boss(perk2.equals($swap), hpCurrent <= hpMax / 2)
+		not Swapped()
+	then
+		retract($swap);
+
+		double def = $boss.getDefence();
+		$boss.setDefence($boss.getAttack());
+		$boss.setAttack(def);
+		insert(new Swapped());
+		update($boss);
+end

@@ -1,0 +1,143 @@
+package dungeonCrawler
+
+import dungeonCrawler.*;
+import dungeonCrawler.characters.*;
+import dungeonCrawler.gameEngine.*;
+import dungeonCrawler.perks.*;
+import java.awt.event.KeyEvent;
+
+
+// Remove duplicate keypress
+rule "Remove KeyPress"
+salience -100
+	when
+		$gw : GameWindow(state == GameState.MENU)
+		$k1 : KeyPress()
+		$k2 : KeyPress(code == $k1.code)
+	then
+		retract($k2);
+end
+
+// Rules for cursor movement
+
+rule "Menu Cursor UP"
+	when
+		$gw : GameWindow(state == GameState.MENU)
+		$kp : KeyPress(code == KeyEvent.VK_UP)
+	then
+		retract($kp);
+		$gw.decreaseCursorIndex();
+		update($gw);
+end
+
+rule "Menu Cursor DOWN"
+	when
+		$gw : GameWindow(state == GameState.MENU)
+		$kp : KeyPress(code == KeyEvent.VK_DOWN)
+		$map : Map()
+	then
+		retract($kp);
+		$gw.increaseCursorIndex();
+		update($gw);
+end
+
+//increase characteristc if selected and have enough points
+rule "Move Menu Cursor RIGHT"
+	when
+		$gw : GameWindow($pg : pg, points > 0 && <= 10 && cursorIndex >= 0 && <= 3, state == GameState.MENU)
+		$kp : KeyPress(code == KeyEvent.VK_RIGHT)
+	then
+		retract($kp);
+		$gw.decreasePoints();
+		switch($gw.getCursorIndex()){
+			case 0:
+				$pg.setAttack($pg.getAttack() + 1);
+				break;
+			case 1:
+				$pg.setDefence($pg.getDefence() + 1);
+				break;
+			case 2:
+				$pg.setSpeed($pg.getSpeed() + 1);
+				break;
+			case 3:
+				$pg.setHpMax($pg.getHpMax() + 1);
+				$pg.setHpCurrent($pg.getHpMax());
+				break;
+		}
+		
+		update($gw);
+end
+
+//decrease characteristc if selected and have more than zero points
+rule "Move Menu Cursor LEFT"
+	when
+		$gw : GameWindow(pg : pg, points < 10 && >= 0 && cursorIndex >= 0 && <= 3, state == GameState.MENU)
+		$kp : KeyPress(code == KeyEvent.VK_LEFT)
+	then
+		retract($kp);
+		
+		switch($gw.getCursorIndex()){
+			case 0:
+				if(pg.getAttack() <= 1) return;
+				pg.setAttack(pg.getAttack() - 1);
+				break;
+			case 1:
+				if(pg.getDefence() <= 1) return;
+				pg.setDefence(pg.getDefence() - 1);
+				break;
+			case 2:
+				if(pg.getSpeed() <= 1) return;
+				pg.setSpeed(pg.getSpeed() - 1);
+				break;
+			case 3:
+				if(pg.getHpMax() <= 1) return;
+				pg.setHpMax(pg.getHpMax() - 1);
+				pg.setHpCurrent(pg.getHpMax());
+				break;
+		}
+		$gw.increasePoints();
+		update($gw);
+end
+
+// if the cursor is on a perk, add it to the PG and start walking
+rule "Menu Cursor ENTER"
+    when
+		$gw : GameWindow(pg : pg, cursorIndex >= 4, state == GameState.MENU)
+		$kp : KeyPress(code == KeyEvent.VK_ENTER)
+		$map : Map()
+    then
+    	retract($kp);
+        Perk[] perks = new Perk[] {new Petrification(), new CriticalHit(), new DieHard(), new Rage(),
+								 new Healer(), new CollateralDamage(), new Swap(), new Elusion()};
+		pg.setPerk(perks[$gw.getCursorIndex() - 4]);
+					
+		int rPg = -1;
+		int cPg = -1;
+		boolean found = false;
+		for(int r = 0; r < $map.getHeight() && !found; r++) {
+			for(int c = 0; c < $map.getWidth() && !found; c++) {
+				if(get($map, r,c) == MapElement.PG) {
+					rPg = r;
+					cPg = c;
+					found = true;
+				}
+			}
+		}
+		Location location = new Location(rPg, cPg);
+		pg.setLocation(location);
+		
+		if(pg.getPerk().equals(new CriticalHit())){
+			pg.setHpMax(pg.getHpMax() / 2);
+			pg.setHpCurrent(pg.getHpMax());
+			pg.setCritical(0.15);
+		}
+        $gw.setState(GameState.WALKING);
+   		for(int i = 0; i < numberOf($map, MapElement.KEY); i++){
+			insert(new Key());
+		}
+		insert(new Door());
+		insert($gw.getPg());
+
+        update($gw);
+end
+

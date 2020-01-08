@@ -1,0 +1,168 @@
+package dungeonCrawler
+
+import dungeonCrawler.*;
+import dungeonCrawler.objects.*;
+import dungeonCrawler.gameEngine.*;
+import dungeonCrawler.characters.*;
+import java.awt.event.KeyEvent;
+
+//get what element the map contains in a given spot
+function MapElement get(Map map, int row, int col) {
+		if(row < 0 || row >= map.getHeight()) return MapElement.WALL;
+		if(col < 0 || col>= map.getWidth()) return MapElement.WALL;
+		
+		return map.getTiledMap()[row][col];
+}
+
+//update the map moving the PG in a given direction, if possible
+function void movePG(Map map, Location pgLoc, Direction dir) {
+	
+	int rPg = pgLoc.getRow();
+	int cPg = pgLoc.getCol();
+		
+	if (rPg <= -1) return;
+	
+	switch(dir) {
+	case DOWN:
+		if(get(map, rPg+1, cPg) != MapElement.FLOOR && get(map, rPg+1, cPg) != MapElement.KEY) break;
+		
+		map.setTiledMap(rPg+1, cPg, MapElement.PG);
+		pgLoc.setRow(pgLoc.getRow() + 1);
+		map.setTiledMap(rPg, cPg, MapElement.FLOOR);
+		break;
+	case LEFT:
+		if(get(map, rPg, cPg-1) != MapElement.FLOOR && get(map, rPg, cPg-1) != MapElement.KEY) break;
+		
+		map.setTiledMap(rPg, cPg-1, MapElement.PG);
+		pgLoc.setCol(pgLoc.getCol() - 1);
+		map.setTiledMap(rPg, cPg, MapElement.FLOOR);
+		break;
+	case RIGHT:
+		if(get(map, rPg, cPg+1) != MapElement.FLOOR && get(map, rPg, cPg+1) != MapElement.KEY) break;
+		
+		map.setTiledMap(rPg, cPg+1, MapElement.PG);
+		pgLoc.setCol(pgLoc.getCol() + 1);
+		map.setTiledMap(rPg, cPg, MapElement.FLOOR);
+		break;
+	case UP:
+		if(get(map, rPg-1, cPg) != MapElement.FLOOR && get(map, rPg-1, cPg) != MapElement.KEY) break;
+		
+		map.setTiledMap(rPg-1, cPg, MapElement.PG);
+		pgLoc.setRow(pgLoc.getRow() - 1);
+		map.setTiledMap(rPg, cPg, MapElement.FLOOR);
+		break;
+	}
+}
+
+//Locate and remove the door
+function void removeDoor(Map map) {
+	int rDoor = -1;
+	int cDoor = -1;
+	boolean found = false;
+	for(int r = 0; r < map.getHeight() && !found; r++) {
+		for(int c = 0; c < map.getWidth() && !found; c++) {
+			if(get(map, r,c) == MapElement.DOOR) {
+				rDoor = r;
+				cDoor = c;
+				found = true;
+			}
+		}
+	}
+	
+	if(rDoor <= -1) return;
+	
+	map.setTiledMap(rDoor, cDoor, MapElement.FLOOR);
+}
+
+//get how many elements of a given type there are still present on the map
+function int numberOf(Map map, MapElement element) {
+	int n = 0;
+	boolean found = false;
+	for(int r = 0; r < map.getHeight() && !found; r++) {
+		for(int c = 0; c < map.getWidth() && !found; c++) {
+			if(get(map, r,c) == element) n++;
+		}
+	}
+	
+	return n;
+}
+
+//removes the door if no keys are yet to be collected
+rule "Remove Door"
+    when
+    	not Key()
+    	$d : Door()
+    	$map : Map()
+    then
+        retract($d);
+        removeDoor($map);
+        update($map)
+end
+
+//collects a key by removing it from the working memory
+rule "Remove Key"
+    when
+    	$rk : RemoveKey()
+    	$key : Key()
+    then
+        retract($rk)
+        retract($key)
+end
+
+//move the PG in a given direction
+//start a battle if an enemy is nearby
+//remove key if collected
+rule "Move PG"
+    when
+        $map : Map()
+        $kp : KeyPress(key : code)
+        $pg : PG( $pgLoc : location)
+        $gw : GameWindow(state == GameState.WALKING)
+    then
+    	retract($kp);
+    	int rPg = $pgLoc.getRow();
+    	int cPg = $pgLoc.getCol();
+    	
+    	if(get($map, $pgLoc.getRow()+1, $pgLoc.getCol()) == MapElement.FOE || 
+		   get($map, $pgLoc.getRow(), $pgLoc.getCol()-1) == MapElement.FOE || 
+		   get($map, $pgLoc.getRow(), $pgLoc.getCol()+1) == MapElement.FOE || 
+		   get($map, $pgLoc.getRow()-1, $pgLoc.getCol()) == MapElement.FOE){
+			insert(new StartBattleFoe());
+		}
+		
+		if(get($map, $pgLoc.getRow()+1, $pgLoc.getCol()) == MapElement.BOSS || 
+		   get($map, $pgLoc.getRow(), $pgLoc.getCol()-1) == MapElement.BOSS || 
+		   get($map, $pgLoc.getRow(), $pgLoc.getCol()+1) == MapElement.BOSS || 
+		   get($map, $pgLoc.getRow()-1, $pgLoc.getCol()) == MapElement.BOSS){
+			insert(new StartBattleBoss());
+		}
+		
+		if(get($map, rPg-1, cPg) == MapElement.KEY || get($map, rPg+1, cPg) == MapElement.KEY || get($map, rPg, cPg-1) == MapElement.KEY ||
+		get($map, rPg, cPg+1) == MapElement.KEY){
+			insert(new RemoveKey());
+		}
+
+		switch(key) {
+		case KeyEvent.VK_UP:		
+
+			movePG($map, $pgLoc, Direction.UP);
+			break;
+		case KeyEvent.VK_DOWN:
+				
+			movePG($map, $pgLoc, Direction.DOWN);
+			break;
+		case KeyEvent.VK_LEFT:
+			
+			movePG($map, $pgLoc, Direction.LEFT);
+			break;
+		case KeyEvent.VK_RIGHT:
+				
+			movePG($map, $pgLoc, Direction.RIGHT);
+			break;
+		}
+		
+		update($pg);
+		update($map);
+end
+
+
